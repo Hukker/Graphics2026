@@ -11,6 +11,9 @@ ID3D11RenderTargetView* g_pRTV = nullptr;
 UINT g_Width = 1280;
 UINT g_Height = 720;
 
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(linker, "/SUBSYSTEM:WINDOWS")
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -110,10 +113,8 @@ void Render()
     g_pSwapChain->Present(1, 0);
 }
 
-
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
-    // Регистрация окна
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0, 0, hInstance, nullptr,
                       LoadCursor(nullptr, IDC_ARROW), nullptr, nullptr, L"DX11Clear", nullptr };
     RegisterClassEx(&wc);
@@ -124,16 +125,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_hWnd = CreateWindow(wc.lpszClassName, L"DirectX 11", WS_OVERLAPPEDWINDOW,
         100, 100, r.right - r.left, r.bottom - r.top, nullptr, nullptr, hInstance, nullptr);
 
-    if (!g_hWnd) return -1;
+    ShowWindow(g_hWnd, nShowCmd);
+    UpdateWindow(g_hWnd);
 
     if (FAILED(InitDirectX(g_hWnd)))
     {
         Cleanup();
-        return -1;
+        return 0;
     }
-
-    ShowWindow(g_hWnd, nShowCmd);
-    UpdateWindow(g_hWnd);
 
     MSG msg = {};
     while (msg.message != WM_QUIT)
@@ -145,10 +144,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
         else
         {
-            Render(); 
+            Render();
         }
     }
 
     Cleanup();
-    return 0;
+    UnregisterClass(wc.lpszClassName, hInstance);
+    return (int)msg.wParam;
 }
