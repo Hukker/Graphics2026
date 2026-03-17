@@ -11,33 +11,33 @@
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxguid.lib") 
 
-ID3D11Device* g_GraphicsDevice = nullptr;
-ID3D11DeviceContext* g_DeviceContext = nullptr;
-IDXGISwapChain* g_ExchangeChain = nullptr;
-ID3D11RenderTargetView* g_ColorBuffer = nullptr;
+ID3D11Device* g_D3DDevice = nullptr;
+ID3D11DeviceContext* g_ImmediateContext = nullptr;
+IDXGISwapChain* g_SwapChain = nullptr;
+ID3D11RenderTargetView* g_RenderTarget = nullptr;
 
-ID3D11VertexShader* g_VertexProcessor = nullptr;
-ID3D11PixelShader* g_FragmentProcessor = nullptr;
-ID3D11InputLayout* g_VertexStructure = nullptr;
-ID3D11Buffer* g_GeometryBuffer = nullptr;
-ID3D11Buffer* g_IndexPool = nullptr;
+ID3D11VertexShader* g_VS = nullptr;
+ID3D11PixelShader* g_PS = nullptr;
+ID3D11InputLayout* g_InputLayout = nullptr;
+ID3D11Buffer* g_VertexBuffer = nullptr;
+ID3D11Buffer* g_IndexBuffer = nullptr;
 
-constexpr int SCREEN_WIDTH = 800;
-constexpr int SCREEN_HEIGHT = 600;
+constexpr int WINDOW_WIDTH = 800;
+constexpr int WINDOW_HEIGHT = 600;
 
-LRESULT CALLBACK MainWindowHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-namespace helpers {
+namespace utils {
     template<typename T>
-    void DisposeResource(T*& resource) noexcept {
-        if (resource) {
-            resource->Release();
-            resource = nullptr;
+    void SafeRelease(T*& ptr) noexcept {
+        if (ptr) {
+            ptr->Release();
+            ptr = nullptr;
         }
     }
 }
 
-static const char* g_VertexShaderCode = R"(
+static const char* g_VS_Source = R"(
 struct VS_INPUT {
     float3 pos : POSITION;
     float4 color : COLOR;
@@ -56,7 +56,7 @@ VS_OUTPUT main(VS_INPUT input) {
 }
 )";
 
-static const char* g_PixelShaderCode = R"(
+static const char* g_PS_Source = R"(
 struct PS_INPUT {
     float4 pos : SV_Position;
     float4 color : COLOR;
@@ -67,239 +67,239 @@ float4 main(PS_INPUT input) : SV_Target {
 }
 )";
 
-struct VertexData {
-    float coordinates[3];
-    uint32_t colorValue;
+struct ColoredVertex {
+    float position[3];
+    uint32_t rgba;
 };
 
-static const VertexData g_VertexPool[] = {
+static const ColoredVertex g_Vertices[] = {
     { { -0.5f, -0.5f, 0.0f }, 0x00FF0000 },
     { {  0.5f, -0.5f, 0.0f }, 0x0000FF00 },
     { {  0.0f,  0.5f, 0.0f }, 0x000000FF }
 };
 
-static const uint16_t g_ElementIndices[] = { 0, 2, 1 };
+static const uint16_t g_Indices[] = { 0, 2, 1 };
 
-static ID3DBlob* CompileShaderCode(
-    const char* sourceCode,
-    const char* functionName,
-    const char* targetProfile,
-    const char* debugLabel) noexcept
+static ID3DBlob* CompileShaderFromString(
+    const char* source,
+    const char* entryPoint,
+    const char* profile,
+    const char* debugName) noexcept
 {
-    UINT compilationFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 
-    ID3DBlob* compiledCode = nullptr;
-    ID3DBlob* errorMessages = nullptr;
+    ID3DBlob* code = nullptr;
+    ID3DBlob* errors = nullptr;
 
-    HRESULT result = D3DCompile(
-        sourceCode,
-        strlen(sourceCode),
-        debugLabel,
+    HRESULT hr = D3DCompile(
+        source,
+        strlen(source),
+        debugName,
         nullptr,
         nullptr,
-        functionName,
-        targetProfile,
-        compilationFlags,
+        entryPoint,
+        profile,
+        flags,
         0,
-        &compiledCode,
-        &errorMessages
+        &code,
+        &errors
     );
 
-    if (FAILED(result)) {
-        if (errorMessages) {
-            const char* errorText = static_cast<const char*>(errorMessages->GetBufferPointer());
-            OutputDebugStringA(errorText);
-            MessageBoxA(nullptr, errorText, "Shader Compilation Failed", MB_ICONERROR);
-            helpers::DisposeResource(errorMessages);
+    if (FAILED(hr)) {
+        if (errors) {
+            const char* msg = static_cast<const char*>(errors->GetBufferPointer());
+            OutputDebugStringA(msg);
+            MessageBoxA(nullptr, msg, "Shader Compilation Error", MB_ICONERROR);
+            utils::SafeRelease(errors);
         }
         return nullptr;
     }
 
-    helpers::DisposeResource(errorMessages);
-    return compiledCode;
+    utils::SafeRelease(errors);
+    return code;
 }
 
-static HRESULT InitializeGraphicsSystem(HWND targetWindow) noexcept {
-    HRESULT result = S_OK;
+static HRESULT CreateD3DResources(HWND hTargetWindow) noexcept {
+    HRESULT hr = S_OK;
 
-    DXGI_SWAP_CHAIN_DESC swapDescription = {};
-    swapDescription.BufferCount = 1;
-    swapDescription.BufferDesc.Width = SCREEN_WIDTH;
-    swapDescription.BufferDesc.Height = SCREEN_HEIGHT;
-    swapDescription.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swapDescription.BufferDesc.RefreshRate.Numerator = 60;
-    swapDescription.BufferDesc.RefreshRate.Denominator = 1;
-    swapDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapDescription.OutputWindow = targetWindow;
-    swapDescription.SampleDesc.Count = 1;
-    swapDescription.SampleDesc.Quality = 0;
-    swapDescription.Windowed = TRUE;
-    swapDescription.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+    DXGI_SWAP_CHAIN_DESC scDesc = {};
+    scDesc.BufferCount = 1;
+    scDesc.BufferDesc.Width = WINDOW_WIDTH;
+    scDesc.BufferDesc.Height = WINDOW_HEIGHT;
+    scDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scDesc.BufferDesc.RefreshRate.Numerator = 60;
+    scDesc.BufferDesc.RefreshRate.Denominator = 1;
+    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scDesc.OutputWindow = hTargetWindow;
+    scDesc.SampleDesc.Count = 1;
+    scDesc.SampleDesc.Quality = 0;
+    scDesc.Windowed = TRUE;
+    scDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-    UINT creationFlags = 0;
+    UINT createFlags = 0;
 
     D3D_FEATURE_LEVEL requestedLevel = D3D_FEATURE_LEVEL_11_0;
     D3D_FEATURE_LEVEL obtainedLevel;
 
-    result = D3D11CreateDeviceAndSwapChain(
+    hr = D3D11CreateDeviceAndSwapChain(
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
-        creationFlags,
+        createFlags,
         &requestedLevel,
         1,
         D3D11_SDK_VERSION,
-        &swapDescription,
-        &g_ExchangeChain,
-        &g_GraphicsDevice,
+        &scDesc,
+        &g_SwapChain,
+        &g_D3DDevice,
         &obtainedLevel,
-        &g_DeviceContext
+        &g_ImmediateContext
     );
 
-    if (FAILED(result))
-        return result;
+    if (FAILED(hr))
+        return hr;
 
-    ID3D11Texture2D* backBufferTexture = nullptr;
-    result = g_ExchangeChain->GetBuffer(0, IID_ID3D11Texture2D, reinterpret_cast<void**>(&backBufferTexture));
-    if (FAILED(result))
-        return result;
+    ID3D11Texture2D* backBuffer = nullptr;
+    hr = g_SwapChain->GetBuffer(0, IID_ID3D11Texture2D, reinterpret_cast<void**>(&backBuffer));
+    if (FAILED(hr))
+        return hr;
 
-    result = g_GraphicsDevice->CreateRenderTargetView(backBufferTexture, nullptr, &g_ColorBuffer);
-    helpers::DisposeResource(backBufferTexture);
-    if (FAILED(result))
-        return result;
+    hr = g_D3DDevice->CreateRenderTargetView(backBuffer, nullptr, &g_RenderTarget);
+    utils::SafeRelease(backBuffer);
+    if (FAILED(hr))
+        return hr;
 
-    g_DeviceContext->OMSetRenderTargets(1, &g_ColorBuffer, nullptr);
+    g_ImmediateContext->OMSetRenderTargets(1, &g_RenderTarget, nullptr);
 
     return S_OK;
 }
 
-static HRESULT BuildSceneComponents() noexcept {
-    HRESULT result = S_OK;
+static HRESULT CreateSceneAssets() noexcept {
+    HRESULT hr = S_OK;
 
-    D3D11_BUFFER_DESC vertexBufferDesc = {};
-    vertexBufferDesc.ByteWidth = sizeof(g_VertexPool);
-    vertexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_BUFFER_DESC vbDesc = {};
+    vbDesc.ByteWidth = sizeof(g_Vertices);
+    vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 
-    D3D11_SUBRESOURCE_DATA vertexInitData = {};
-    vertexInitData.pSysMem = g_VertexPool;
+    D3D11_SUBRESOURCE_DATA vbInitData = {};
+    vbInitData.pSysMem = g_Vertices;
 
-    result = g_GraphicsDevice->CreateBuffer(&vertexBufferDesc, &vertexInitData, &g_GeometryBuffer);
-    if (FAILED(result)) return result;
+    hr = g_D3DDevice->CreateBuffer(&vbDesc, &vbInitData, &g_VertexBuffer);
+    if (FAILED(hr)) return hr;
 
-    D3D11_BUFFER_DESC indexBufferDesc = {};
-    indexBufferDesc.ByteWidth = sizeof(g_ElementIndices);
-    indexBufferDesc.Usage = D3D11_USAGE_IMMUTABLE;
-    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_BUFFER_DESC ibDesc = {};
+    ibDesc.ByteWidth = sizeof(g_Indices);
+    ibDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
 
-    D3D11_SUBRESOURCE_DATA indexInitData = {};
-    indexInitData.pSysMem = g_ElementIndices;
+    D3D11_SUBRESOURCE_DATA ibInitData = {};
+    ibInitData.pSysMem = g_Indices;
 
-    result = g_GraphicsDevice->CreateBuffer(&indexBufferDesc, &indexInitData, &g_IndexPool);
-    if (FAILED(result)) return result;
+    hr = g_D3DDevice->CreateBuffer(&ibDesc, &ibInitData, &g_IndexBuffer);
+    if (FAILED(hr)) return hr;
 
-    ID3DBlob* vertexShaderBlob = CompileShaderCode(g_VertexShaderCode, "main", "vs_5_0", "vertex_shader.hlsl");
-    if (!vertexShaderBlob) return E_FAIL;
+    ID3DBlob* vsBlob = CompileShaderFromString(g_VS_Source, "main", "vs_5_0", "triangle_vs.hlsl");
+    if (!vsBlob) return E_FAIL;
 
-    result = g_GraphicsDevice->CreateVertexShader(
-        vertexShaderBlob->GetBufferPointer(),
-        vertexShaderBlob->GetBufferSize(),
+    hr = g_D3DDevice->CreateVertexShader(
+        vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(),
         nullptr,
-        &g_VertexProcessor
+        &g_VS
     );
-    if (FAILED(result)) {
-        helpers::DisposeResource(vertexShaderBlob);
-        return result;
+    if (FAILED(hr)) {
+        utils::SafeRelease(vsBlob);
+        return hr;
     }
 
-    ID3DBlob* pixelShaderBlob = CompileShaderCode(g_PixelShaderCode, "main", "ps_5_0", "pixel_shader.hlsl");
-    if (!pixelShaderBlob) {
-        helpers::DisposeResource(vertexShaderBlob);
+    ID3DBlob* psBlob = CompileShaderFromString(g_PS_Source, "main", "ps_5_0", "triangle_ps.hlsl");
+    if (!psBlob) {
+        utils::SafeRelease(vsBlob);
         return E_FAIL;
     }
 
-    result = g_GraphicsDevice->CreatePixelShader(
-        pixelShaderBlob->GetBufferPointer(),
-        pixelShaderBlob->GetBufferSize(),
+    hr = g_D3DDevice->CreatePixelShader(
+        psBlob->GetBufferPointer(),
+        psBlob->GetBufferSize(),
         nullptr,
-        &g_FragmentProcessor
+        &g_PS
     );
-    if (FAILED(result)) {
-        helpers::DisposeResource(vertexShaderBlob);
-        helpers::DisposeResource(pixelShaderBlob);
-        return result;
+    if (FAILED(hr)) {
+        utils::SafeRelease(vsBlob);
+        utils::SafeRelease(psBlob);
+        return hr;
     }
 
-    D3D11_INPUT_ELEMENT_DESC layoutDefinition[] = {
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
-          offsetof(VertexData, coordinates), D3D11_INPUT_PER_VERTEX_DATA, 0 },
+          offsetof(ColoredVertex, position), D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM,   0,
-          offsetof(VertexData, colorValue), D3D11_INPUT_PER_VERTEX_DATA, 0 }
+          offsetof(ColoredVertex, rgba),      D3D11_INPUT_PER_VERTEX_DATA, 0 }
     };
 
-    result = g_GraphicsDevice->CreateInputLayout(
-        layoutDefinition,
-        _countof(layoutDefinition),
-        vertexShaderBlob->GetBufferPointer(),
-        vertexShaderBlob->GetBufferSize(),
-        &g_VertexStructure
+    hr = g_D3DDevice->CreateInputLayout(
+        layout,
+        _countof(layout),
+        vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(),
+        &g_InputLayout
     );
 
-    helpers::DisposeResource(vertexShaderBlob);
-    helpers::DisposeResource(pixelShaderBlob);
+    utils::SafeRelease(vsBlob);
+    utils::SafeRelease(psBlob);
 
-    return result;
+    return hr;
 }
 
-static void ShutdownGraphicsSystem() noexcept {
-    using helpers::DisposeResource;
+static void DestroyD3DResources() noexcept {
+    using utils::SafeRelease;
 
-    DisposeResource(g_VertexStructure);
-    DisposeResource(g_FragmentProcessor);
-    DisposeResource(g_VertexProcessor);
-    DisposeResource(g_IndexPool);
-    DisposeResource(g_GeometryBuffer);
-    DisposeResource(g_ColorBuffer);
-    DisposeResource(g_ExchangeChain);
-    DisposeResource(g_DeviceContext);
+    SafeRelease(g_InputLayout);
+    SafeRelease(g_PS);
+    SafeRelease(g_VS);
+    SafeRelease(g_IndexBuffer);
+    SafeRelease(g_VertexBuffer);
+    SafeRelease(g_RenderTarget);
+    SafeRelease(g_SwapChain);
+    SafeRelease(g_ImmediateContext);
 
-    DisposeResource(g_GraphicsDevice);
+    SafeRelease(g_D3DDevice);
 }
 
-static void DrawScene() noexcept {
-    const float backgroundColor[4] = { 0.0f, 0.15f, 0.3f, 1.0f };
-    g_DeviceContext->ClearRenderTargetView(g_ColorBuffer, backgroundColor);
+static void RenderFrame() noexcept {
+    const float clearColor[4] = { 0.0f, 0.15f, 0.3f, 1.0f };
+    g_ImmediateContext->ClearRenderTargetView(g_RenderTarget, clearColor);
 
-    D3D11_VIEWPORT viewportSettings = {};
-    viewportSettings.TopLeftX = 0.0f;
-    viewportSettings.TopLeftY = 0.0f;
-    viewportSettings.Width = static_cast<float>(SCREEN_WIDTH);
-    viewportSettings.Height = static_cast<float>(SCREEN_HEIGHT);
-    viewportSettings.MinDepth = 0.0f;
-    viewportSettings.MaxDepth = 1.0f;
-    g_DeviceContext->RSSetViewports(1, &viewportSettings);
+    D3D11_VIEWPORT viewport = {};
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    viewport.Width = static_cast<float>(WINDOW_WIDTH);
+    viewport.Height = static_cast<float>(WINDOW_HEIGHT);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    g_ImmediateContext->RSSetViewports(1, &viewport);
 
-    D3D11_RECT clippingArea = { 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT };
-    g_DeviceContext->RSSetScissorRects(1, &clippingArea);
+    D3D11_RECT scissorRect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
+    g_ImmediateContext->RSSetScissorRects(1, &scissorRect);
 
-    UINT elementSize = sizeof(VertexData);
-    UINT startOffset = 0;
-    ID3D11Buffer* buffers[] = { g_GeometryBuffer };
-    g_DeviceContext->IASetVertexBuffers(0, 1, buffers, &elementSize, &startOffset);
-    g_DeviceContext->IASetIndexBuffer(g_IndexPool, DXGI_FORMAT_R16_UINT, 0);
-    g_DeviceContext->IASetInputLayout(g_VertexStructure);
-    g_DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    UINT stride = sizeof(ColoredVertex);
+    UINT offset = 0;
+    ID3D11Buffer* vbs[] = { g_VertexBuffer };
+    g_ImmediateContext->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+    g_ImmediateContext->IASetIndexBuffer(g_IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
+    g_ImmediateContext->IASetInputLayout(g_InputLayout);
+    g_ImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    g_DeviceContext->VSSetShader(g_VertexProcessor, nullptr, 0);
-    g_DeviceContext->PSSetShader(g_FragmentProcessor, nullptr, 0);
+    g_ImmediateContext->VSSetShader(g_VS, nullptr, 0);
+    g_ImmediateContext->PSSetShader(g_PS, nullptr, 0);
 
-    g_DeviceContext->DrawIndexed(3, 0, 0);
+    g_ImmediateContext->DrawIndexed(3, 0, 0);
 
-    g_ExchangeChain->Present(0, 0);
+    g_SwapChain->Present(0, 0);
 }
 
-LRESULT CALLBACK MainWindowHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -311,70 +311,70 @@ LRESULT CALLBACK MainWindowHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 }
 
 int WINAPI WinMain(
-    _In_ HINSTANCE instanceHandle,
+    _In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE,
     _In_ LPSTR,
-    _In_ int displayMode)
+    _In_ int nCmdShow)
 {
-    WNDCLASSEX windowClass = {};
-    windowClass.cbSize = sizeof(WNDCLASSEX);
-    windowClass.style = CS_HREDRAW | CS_VREDRAW;
-    windowClass.lpfnWndProc = MainWindowHandler;
-    windowClass.hInstance = instanceHandle;
-    windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    windowClass.lpszClassName = L"GraphicsApplication_Window";
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"D3D11_Triangle_Modified";
 
-    if (!RegisterClassEx(&windowClass)) {
-        MessageBox(nullptr, L"Unable to register window class", L"Initialization Error", MB_ICONERROR);
+    if (!RegisterClassEx(&wc)) {
+        MessageBox(nullptr, L"Window registration failed", L"Error", MB_ICONERROR);
         return -1;
     }
 
-    HWND mainWindow = CreateWindowEx(
+    HWND hMainWindow = CreateWindowEx(
         0,
-        windowClass.lpszClassName,
-        L"Direct3D 11 - Graphics Demo",
+        wc.lpszClassName,
+        L"Direct3D 11 - Colorful Triangle",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
-        SCREEN_WIDTH, SCREEN_HEIGHT,
+        WINDOW_WIDTH, WINDOW_HEIGHT,
         nullptr,
         nullptr,
-        instanceHandle,
+        hInstance,
         nullptr
     );
 
-    if (!mainWindow) {
-        MessageBox(nullptr, L"Failed to create application window", L"Initialization Error", MB_ICONERROR);
+    if (!hMainWindow) {
+        MessageBox(nullptr, L"Window creation failed", L"Error", MB_ICONERROR);
         return -1;
     }
 
-    ShowWindow(mainWindow, displayMode);
-    UpdateWindow(mainWindow);
+    ShowWindow(hMainWindow, nCmdShow);
+    UpdateWindow(hMainWindow);
 
-    if (FAILED(InitializeGraphicsSystem(mainWindow))) {
-        MessageBox(nullptr, L"Graphics system initialization failed", L"Fatal Error", MB_ICONERROR);
-        ShutdownGraphicsSystem();
+    if (FAILED(CreateD3DResources(hMainWindow))) {
+        MessageBox(nullptr, L"Direct3D initialization failed", L"Error", MB_ICONERROR);
+        DestroyD3DResources();
         return -1;
     }
 
-    if (FAILED(BuildSceneComponents())) {
-        MessageBox(nullptr, L"Unable to build scene components", L"Fatal Error", MB_ICONERROR);
-        ShutdownGraphicsSystem();
+    if (FAILED(CreateSceneAssets())) {
+        MessageBox(nullptr, L"Scene asset creation failed", L"Error", MB_ICONERROR);
+        DestroyD3DResources();
         return -1;
     }
 
-    MSG messageQueue = {};
-    while (messageQueue.message != WM_QUIT) {
-        if (PeekMessage(&messageQueue, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&messageQueue);
-            DispatchMessage(&messageQueue);
+    MSG msg = {};
+    while (msg.message != WM_QUIT) {
+        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
         }
         else {
-            DrawScene();
+            RenderFrame();
         }
     }
 
-    ShutdownGraphicsSystem();
+    DestroyD3DResources();
 
-    return static_cast<int>(messageQueue.wParam);
+    return static_cast<int>(msg.wParam);
 }
